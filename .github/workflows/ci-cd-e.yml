@@ -41,6 +41,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
@@ -63,6 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production    # 這會觸發「待審核」
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
