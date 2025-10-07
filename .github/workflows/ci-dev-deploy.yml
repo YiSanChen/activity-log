@@ -2,7 +2,7 @@ name: CI Dev Deployment
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
 
 # 讓 GITHUB_TOKEN 有寫入權限（給 gh release 用）
 permissions:
