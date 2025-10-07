@@ -1,0 +1,81 @@
+name: CI/CD Deployment Pipeline (Dev → Staging → Production)
+
+on:
+  workflow_dispatch: {}   # 手動觸發，避免每次 push 都跑到 prod
+
+permissions:
+  contents: write   # 讓 GITHUB_TOKEN 可以建立/刪除 Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.1.29"
+
+      # 將以 package.json 的 "build": "bun i && ncc build src/index.js --license licenses.txt"
+      - name: Build
+        run: npm run build
+
+      - name: Package build as zip
+        run: zip -r build.zip dist/ package.json action.yml licenses.txt || true
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: build.zip
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Release Staging Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ vars.BUILD_TAG }}        # staging-v1.0
+          NOTE: ${{ vars.RELEASE_NOTE }}    # Testing pre-production release
+        run: |
+          gh release create "$TAG" build.zip --prerelease --notes "$NOTE" || \
+          (echo "Tag may exist, deleting and recreating..." && \
+           gh release delete "$TAG" -y && \
+           git tag -d "$TAG" || true && \
+           gh release create "$TAG" build.zip --prerelease --notes "$NOTE")
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production    # 這會觸發「待審核」
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Release Production Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ vars.BUILD_TAG }}        # prod-v1.0
+          NOTE: ${{ vars.RELEASE_NOTE }}    # Production release
+        run: |
+          gh release create "$TAG" build.zip --notes "$NOTE" || \
+          (echo "Tag may exist, deleting and recreating..." && \
+           gh release delete "$TAG" -y && \
+           git tag -d "$TAG" || true && \
+           gh release create "$TAG" build.zip --notes "$NOTE")
