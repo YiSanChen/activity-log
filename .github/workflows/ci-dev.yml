@@ -1,0 +1,97 @@
+name: CI Dev Deployment
+
+on:
+  push:
+    branches: [ master ]
+
+# 讓 GITHUB_TOKEN 有寫入權限（給 gh release 用）
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 關鍵：安裝 Bun，因為 package.json 的 build 會呼叫 `bun i`
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.1.29"  # 或留空用最新穩定版
+
+      # 跑現有的 build 腳本：bun i + ncc build -> 產生 dist/index.js
+      - name: Build
+        run: npm run build
+
+      # 將 dist/ 與關鍵檔打包，評分時可下載檢查
+      - name: Package build as zip
+        run: zip -r build.zip dist/ package.json action.yml licenses.txt || true
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: build.zip
+
+  test:
+    # ✅ 新增的測試階段：依賴 build
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # 需要原始碼來跑 `npm test`（取得 package.json 與 tests/）
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 下載 build 階段產生的 artifact（符合作業要求）
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Unzip artifact (optional)
+        run: |
+          unzip -l build.zip
+          unzip -o build.zip -d ./build_artifact
+
+      - name: Setup Node (for tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run Automated Tests
+        run: |
+          echo "Running automated tests..."
+          npm test || (echo "❌ Tests failed" && exit 1)
+
+  deploy-dev:
+    # ⬅️ 改成依賴 test（只有測試過才會部署）
+    needs: test
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Release Dev Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ vars.BUILD_TAG }}
+          NOTE: ${{ vars.RELEASE_NOTE }}
+        run: |
+          gh release create "$TAG" build.zip --notes "$NOTE" || \
+          (echo "Tag may exist, deleting and recreating..." && \
+           gh release delete "$TAG" -y && \
+           git tag -d "$TAG" || true && \
+           gh release create "$TAG" build.zip --notes "$NOTE")
