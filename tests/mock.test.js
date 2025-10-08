@@ -1,6 +1,6 @@
 // tests/mock.test.js
 console.log("Running automated tests...");
-const passed = false; // 改成 false 可模擬失敗
+const passed = true; // 改成 false 可模擬失敗
 if (passed) {
   console.log("✅ Tests passed!");
   process.exit(0);
