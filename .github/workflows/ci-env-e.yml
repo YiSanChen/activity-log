@@ -1,0 +1,156 @@
+name: CI Multi-Env (E-level)
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # release 需要
+  actions: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 你目前的 build 依賴 Bun（bun i + ncc）
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.1.29"   # 可留空用預設穩定版
+
+      - name: Build (bun i + ncc)
+        run: npm run build
+
+      # 將產物打包（保險含 dist/ 與關鍵檔）
+      - name: Package build as zip
+        run: zip -r build.zip dist/ package.json action.yml licenses.txt || true
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: build.zip
+
+  test-unit:
+    name: Test - Unit
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Unzip artifact (optional)
+        run: |
+          unzip -l build.zip
+          unzip -o build.zip -d ./build_artifact
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 以 TEST_ENV=staging 跑單元測試
+      - name: Run Unit Tests (staging)
+        env:
+          TEST_ENV: staging
+        run: |
+          echo "TEST_ENV=$TEST_ENV"
+          npm run test:unit
+
+  test-integration:
+    name: Test - Integration
+    needs: test-unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Unzip artifact (optional)
+        run: unzip -o build.zip -d ./build_artifact
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 以 TEST_ENV=staging 跑整合測試
+      - name: Run Integration Tests (staging)
+        env:
+          TEST_ENV: staging
+        run: |
+          echo "TEST_ENV=$TEST_ENV"
+          npm run test:integration
+
+  deploy-staging:
+    name: Deploy - Staging
+    needs: test-integration
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      # 建議用官方 release action，較不易遇到 gh 權限問題
+      - name: Release to Staging
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "staging-${{ github.run_number }}"
+          name: "Staging Build #${{ github.run_number }}"
+          body: "Staging release after unit+integration tests (TEST_ENV=staging)"
+          files: |
+            build.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-production:
+    name: Deploy - Production (requires approval)
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: production         # 在 Settings → Environments 設 Required reviewers
+      url: https://example.com # 可選
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      # 如需在 prod 前再跑一次快速檢查，可在此加 smoke test（TEST_ENV=prod）
+      - name: Optional Prod Smoke (echo)
+        env:
+          TEST_ENV: prod
+        run: |
+          echo "About to deploy with TEST_ENV=$TEST_ENV"
+
+      - name: Release to Production
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "prod-${{ github.run_number }}"
+          name: "Production Build #${{ github.run_number }}"
+          body: "Production release after staging (manual approval required)"
+          files: |
+            build.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
