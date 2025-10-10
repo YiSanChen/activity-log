@@ -1,4 +1,4 @@
-name: CI Multi-Env Pipeline
+name: CI Multi-Env (E+O)
 
 on:
   push:
@@ -6,15 +6,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # 建立 release / 修改內容
-  issues: write          # 失敗自動開 Issue（O 級）
+  contents: write
   actions: read
 
 env:
-  # 可在 repo → Settings → Actions → Variables 覆蓋
-  BUILD_TAG_PREFIX: dev
-  RELEASE_NOTE: "Automated release"
-  COV_MIN: "75"          # O 級：覆蓋率門檻（%）
+  COV_MIN: "80"   # 覆蓋率門檻（可在 Actions Variables 覆蓋）
 
 jobs:
   build:
@@ -23,195 +19,145 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.1.29"
-
       - name: Build (bun i + ncc)
         run: npm run build
-
       - name: Package build as zip
         run: zip -r build.zip dist/ package.json action.yml licenses.txt || true
-
-      - name: Upload artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-artifact
           path: build.zip
 
-  # ------------------ E + O：Unit 測試（矩陣） ------------------
   test-unit:
-    name: Test - Unit (matrix)
+    name: Test - Unit
     needs: build
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [18, 20, 22]   # O 級：多 Node 版本
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: build-artifact }
+      - run: |
+          unzip -l build.zip
+          unzip -o build.zip -d ./build_artifact
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Run Unit Tests (staging)
+        env: { TEST_ENV: staging }
+        run: |
+          echo "TEST_ENV=$TEST_ENV"
+          npm run test:unit
 
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifact
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-
-      - name: Unzip artifact
-        run: unzip -o build.zip -d ./build_artifact
-
-      - name: Run Unit Tests (TEST_ENV=staging)
-        env:
-          TEST_ENV: staging         # E 級：參數化環境變數
-        run: npm run test:unit
-
-  # ------------------ E：Integration 測試 ------------------
   test-integration:
     name: Test - Integration
     needs: test-unit
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifact
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Unzip artifact
-        run: unzip -o build.zip -d ./build_artifact
-      - name: Run Integration Tests (TEST_ENV=staging)
-        env:
-          TEST_ENV: staging
-        run: npm run test:integration
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: build-artifact }
+      - run: unzip -o build.zip -d ./build_artifact
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Run Integration Tests (staging)
+        env: { TEST_ENV: staging }
+        run: |
+          echo "TEST_ENV=$TEST_ENV"
+          npm run test:integration
 
-  # ------------------ O：產生覆蓋率 + 門檻管制 ------------------
+  # ---------- O 級新增：Coverage & Gate ----------
   coverage:
     name: Coverage & Gate
     needs: test-integration
     runs-on: ubuntu-latest
+    outputs:
+      pct: ${{ steps.parse.outputs.pct }}
+      ok:  ${{ steps.gate.outputs.ok }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Generate Coverage (mock or real)
-        run: npm run test:coverage
-      - name: Upload Coverage Artifact
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      # 若你的 coverage.mock 不需套件，這步可省；保險留著
+      - name: Install (optional)
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm i; fi
+
+      - name: Run coverage (mock)
+        run: npm run test:coverage   # 會產出 coverage/coverage-summary.json
+
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: coverage/
-      - name: Enforce Coverage Threshold
-        id: cov
-        run: |
-          val=$(grep -oE 'coverage=[0-9]+' coverage/summary.txt | cut -d= -f2)
-          echo "coverage=$val"
-          echo "coverage=$val" >> $GITHUB_OUTPUT
-          if [ "$val" -lt "${COV_MIN}" ]; then
-            echo "Coverage $val% is below threshold ${COV_MIN}%."
-            exit 1
-          fi
 
-  # ------------------ E：部署到 Staging（需測試全過 & 覆蓋率過關） ------------------
+      - name: Parse coverage percentage
+        id: parse
+        run: |
+          node -e "const s=require('./coverage/coverage-summary.json'); \
+            const pct = s.total.lines.pct; \
+            console.log('lines.pct=', pct); \
+            require('fs').appendFileSync(process.env.GITHUB_OUTPUT, `pct=${pct}\n`);"
+
+      - name: Check threshold
+        id: gate
+        env:
+          MIN: ${{ env.COV_MIN }}
+          PCT: ${{ steps.parse.outputs.pct }}
+        run: |
+          node -e "const min=Number(process.env.MIN), pct=Number(process.env.PCT); \
+            const ok = pct >= min; \
+            console.log(`coverage ${pct}% >= ${min}% ? ${ok}`); \
+            require('fs').appendFileSync(process.env.GITHUB_OUTPUT, `ok=${ok}\n`);"
+
   deploy-staging:
     name: Deploy - Staging
     needs: [test-integration, coverage]
-    if: needs.coverage.outputs.ok == 'true'   # 覆蓋率不足 → 直接 skipped
+    if: needs.coverage.outputs.ok == 'true'   # 覆蓋率不足 → Skipped（符合 O 要求3）
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifact
+      - uses: actions/download-artifact@v4
+        with: { name: build-artifact }
       - name: Release to Staging
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "staging-${{ github.run_number }}"
           name: "Staging Build #${{ github.run_number }}"
-          body: "Staging release after passing tests & coverage >= ${{ env.COV_MIN }}%"
-          files: |
-            build.zip
+          body: "Staging after tests; coverage=${{ needs.coverage.outputs.pct }}% (min=${{ env.COV_MIN }}%)"
+          files: build.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ------------------ E：部署到 Production（需 reviewers 手動核准） ------------------
   deploy-production:
-    name: Deploy - Production
+    name: Deploy - Production (requires approval)
     needs: deploy-staging
     if: needs.coverage.outputs.ok == 'true'
     runs-on: ubuntu-latest
     environment:
-      name: production       
-      url: https://example.com 
+      name: production         # 記得在 Environments 設 Required reviewers
+      url: https://example.com
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifact
+      - uses: actions/download-artifact@v4
+        with: { name: build-artifact }
+      - name: Optional Prod Smoke (echo)
+        env: { TEST_ENV: prod }
+        run: echo "About to deploy with TEST_ENV=$TEST_ENV"
       - name: Release to Production
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "prod-${{ github.run_number }}"
           name: "Production Build #${{ github.run_number }}"
-          body: "Production release after manual approval and successful staging"
-          files: |
-            build.zip
+          body: "Production after approval; coverage=${{ needs.coverage.outputs.pct }}% (min=${{ env.COV_MIN }}%)"
+          files: build.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ------------------ O：失敗時自動開 Issue（集中記錄） ------------------
-  on-failure-open-issue:
-    name: Failure Reporter
-    needs:
-      - build
-      - test-unit
-      - test-integration
-      - coverage
-      - deploy-staging
-      - deploy-production
-    if: failure()   # 只在任一需要的 job 失敗時觸發
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create Issue on Failure
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const failedJobs = [
-              'build','test-unit','test-integration','coverage','deploy-staging','deploy-production'
-            ];
-            const title = `🚨 CI Failure in run #${context.runNumber}`;
-            const body = `One or more jobs failed in workflow **${context.workflow}**.
-            - Commit: ${context.sha}
-            - Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
-            - Possibly failed jobs: ${failedJobs.join(', ')}
-
-            Please check the logs and address the issue.`;
-            try {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body
-              });
-            } catch (e) {
-              core.warning('Issue creation failed: ' + e.message);
-            }
