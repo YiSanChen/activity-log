@@ -1,5 +1,7 @@
 <h1 align="center" id="title">Activity Log</h1>
 
+![CI Multi-Env Pipeline](https://github.com/<YiSanChen>/<activity-log>/actions/workflows/ci-multi-env.yml/badge.svg)
+
 ![activity log](https://socialify.git.ci/TheDanniCraft/activity-log/image?forks=1&issues=1&language=1&logo=https%3A%2F%2Favatars.githubusercontent.com%2Fu%2F66677362&name=1&owner=1&pattern=Solid&pulls=1&stargazers=1&theme=Auto)
 
 <p align="center">
