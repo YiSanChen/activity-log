@@ -10,15 +10,12 @@
   "scripts": {
     "watch": "ncc build src/index.js --watch --license licenses.txt",
     "build": "bun i && ncc build src/index.js --license licenses.txt",
-    
-    // 兩階測試 
+
     "test:unit": "node tests/unit.mock.js",
     "test:integration": "node tests/integration.mock.js",
 
-    // 覆蓋率產出
     "test:coverage": "node tests/coverage.mock.js",
     
-    //簡單 test
     "test": "node tests/mock.test.js"
   },
   "devDependencies": {
